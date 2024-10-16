@@ -2,7 +2,6 @@ const express = require('express');
 const app = express();
 const port = 3000;
 const ocrRoutes = require('./routes/ocrRoutes');
-const colorRoutes = require('./routes/colorRoutes');
 
 // Middleware para parsear JSON
 app.use(express.json());
