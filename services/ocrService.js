@@ -2,6 +2,8 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const FormData = require('form-data');
+const { Jimp } = require("jimp");
+
 
 exports.readImage = async (imagePath, mimetype) => {
   try {
@@ -37,3 +39,42 @@ exports.readImage = async (imagePath, mimetype) => {
     throw new Error('Erro ao processar a imagem com OCR');
   }
 };
+
+exports.checkVoted = async (imagePath, targetColor) => {
+  try {
+    const image = await Jimp.read(imagePath);
+
+    let matchingPixels = 0;
+    const totalPixels = image.bitmap.width * image.bitmap.height;
+
+    // Itera sobre cada pixel da imagem
+    image.scan(0, 0, image.bitmap.width, image.bitmap.height, (x, y, idx) => {
+      const red = image.bitmap.data[idx];
+      const green = image.bitmap.data[idx + 1];
+      const blue = image.bitmap.data[idx + 2];
+
+      // Verifica se o pixel é da cor alvo (com tolerância de 10 para cada canal)
+      const tolerance = 10;
+      if (
+        Math.abs(red - targetColor.r) <= tolerance &&
+        Math.abs(green - targetColor.g) <= tolerance &&
+        Math.abs(blue - targetColor.b) <= tolerance
+      ) {
+        matchingPixels++;
+      }
+    });
+
+    // Calcula o percentual de pixels que correspondem à cor alvo
+    const percentage = (matchingPixels / totalPixels) * 100;
+
+    const votou = percentage > 1;
+
+    return {
+      votou
+    };
+  } catch (error) {
+    console.error('Erro ao ler a imagem:', error);
+    throw new Error('Erro ao processar a imagem para contagem de pixels');
+  }
+};
+
