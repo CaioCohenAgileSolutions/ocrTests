@@ -40,9 +40,10 @@ exports.readImage = async (imagePath, mimetype) => {
   }
 };
 
-exports.checkVoted = async (imagePath, targetColor) => {
+exports.checkVoted = async (imagePath) => {
   try {
     const image = await Jimp.read(imagePath);
+    const targetColor = { r: 84, g: 83, b: 96 }; // Exemplo: vermelho puro
 
     let matchingPixels = 0;
     const totalPixels = image.bitmap.width * image.bitmap.height;

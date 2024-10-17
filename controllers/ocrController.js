@@ -34,11 +34,8 @@ exports.checkVoted = async (req, res) => {
     // Obtém o caminho completo do arquivo salvo
     const imagePath = path.resolve(req.file.path);
 
-    // Define a cor alvo em formato RGB (ajuste conforme necessário)
-    const targetColor = { r: 84, g: 83, b: 96 }; // Exemplo: vermelho puro
-
     // Chama o serviço para contar os pixels
-    const result = await ocrService.checkVoted(imagePath, targetColor);
+    const result = await ocrService.checkVoted(imagePath);
 
     // Retorna o resultado
     res.json(result);
@@ -70,15 +67,16 @@ exports.splitImage = async (req, res) => {
     let height = 1330;
     let rows = 5;
     let cols = 4;
-
+    const filename = req.file.originalname.split('.')[0];
     // Remove as bordas da imagem original e prepara para divisão
-    const trimmedImagePath = path.join(outputDir, `trimmed_${req.file.originalname.split('.')[0]}.jpg`);
+    const trimmedImagePath = path.join(outputDir, `trimmed_${filename}.jpg`);
     await sharp(imagePath)
       .extract({ left: 100, top: 170, width, height })
       .toFile(trimmedImagePath);
 
     // Array para armazenar os caminhos das imagens geradas
     const splitImagePathsIds = [];
+    let result = [];
 
     // Divide a imagem em 20 partes (5 linhas x 4 colunas)
     for (let row = 0; row < rows; row++) {
@@ -88,11 +86,18 @@ exports.splitImage = async (req, res) => {
         const partWidth = Math.floor((width / cols)/3);
         const partHeight = Math.floor((height / rows)/10.5);
 
-        const outputPath = path.join(outputDir, `part_${row}_${col}_${req.file.originalname.split('.')[0]}.jpg`);
+        const outputPath = path.join(outputDir, `part_${row}_${col}_${filename}.jpg`);
 
         await sharp(trimmedImagePath)
           .extract({ left, top, width: partWidth, height: partHeight })
           .toFile(outputPath);
+
+          // Realiza o OCR na parte da imagem e obtém o ID
+          const idLido = await ocrService.readImage(outputPath, 'image/jpeg');
+          result.push({
+            id: idLido,
+            votou: null
+          })
 
           splitImagePathsIds.push(outputPath);
       }
@@ -115,7 +120,7 @@ exports.splitImage = async (req, res) => {
 
     // Array para armazenar os caminhos das imagens geradas
     const splitImagePathsVotes = [];
-
+    let i = 0;
     // Divide a imagem em 20 partes (5 linhas x 4 colunas)
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
@@ -124,18 +129,22 @@ exports.splitImage = async (req, res) => {
         const partWidth = Math.floor((width / cols)*0.70);
         const partHeight = Math.floor((height / rows)/2);
 
-        const outputPath = path.join(outputDir, `part_${row}_${col}_${req.file.originalname.split('.')[0]}.jpg`);
+        const outputPath = path.join(outputDir, `part_${row}_${col}_${filename}.jpg`);
 
         await sharp(trimmedImagePath)
           .extract({ left, top, width: partWidth, height: partHeight })
           .toFile(outputPath);
 
+          // Realiza o OCR na parte da imagem e obtém o ID
+          const votou = await ocrService.checkVoted(outputPath);
+          result[i].votou = votou;
+          i++;
+
           splitImagePathsVotes.push(outputPath);
       }
     }
-
-    // Retorna os caminhos das imagens geradas
-    res.json({ message: 'Imagem dividida com sucesso', parts: splitImagePathsIds });
+    
+    res.json(result);
   } catch (error) {
     console.error('Erro ao dividir a imagem:', error);
     res.status(500).json({ error: 'Erro ao dividir a imagem' });
