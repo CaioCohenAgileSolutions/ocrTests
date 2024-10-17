@@ -90,12 +90,13 @@ exports.checkVoted = async (req, res) => {
 
 exports.splitImage = async (req, res) => {
   try {
-    // Verifica se o arquivo foi enviado
-    if (!req.file) {
-      return res.status(400).json({ error: 'Nenhuma imagem enviada' });
+    if (!req.body.base64Image) {
+      return res.status(400).json({ error: 'Nenhuma imagem em Base64 enviada' });
     }
 
-    const imagePath = path.resolve(req.file.path);
+    const base64Image = req.body.base64Image;
+    const buffer = Buffer.from(base64Image, 'base64');
+
     let outputDir = path.resolve('uploads/ids'); // Diretório de saída para as imagens divididas
 
     // IDs
@@ -105,6 +106,13 @@ exports.splitImage = async (req, res) => {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
+    // Define o caminho do arquivo temporário para armazenar a imagem convertida de Base64
+    const filename = 'temp_image';
+    const imagePath = path.join(outputDir, filename + '.jpg');
+
+    // Escreve o buffer (imagem convertida de Base64) para um arquivo temporário
+    fs.writeFileSync(imagePath, buffer);
+
     // Parâmetros para o corte da imagem (ajuste conforme necessário)
     let width = 2050;
     let height = 1330;
@@ -112,7 +120,7 @@ exports.splitImage = async (req, res) => {
     let cols = 4;
 
     // Remove as bordas da imagem original e prepara para divisão
-    const filename = req.file.originalname.split('.')[0].replace(/[^a-zA-Z0-9]/g, '');
+    //const filename = req.file.originalname.split('.')[0].replace(/[^a-zA-Z0-9]/g, '');
     const trimmedImagePath = path.join(outputDir, `trimmed_${filename}.jpg`);
 
     // Verifica se o arquivo já existe e o remove se necessário
