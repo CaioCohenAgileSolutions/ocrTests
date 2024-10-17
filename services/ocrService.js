@@ -5,12 +5,24 @@ const FormData = require('form-data');
 const { Jimp } = require("jimp");
 let OpenAI = require('openai');
 let dotenv = require("dotenv");
+const sharp = require('sharp');
+const { ComputerVisionClient } = require('@azure/cognitiveservices-computervision');
+const { ApiKeyCredentials } = require('@azure/ms-rest-js');
+
+
 dotenv.config();
 
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
+
+const azureVisionClient = new ComputerVisionClient(
+  new ApiKeyCredentials({
+    inHeader: { 'Ocp-Apim-Subscription-Key': process.env.AZURE_VISION_KEY }, // Chave de API
+  }),
+  process.env.AZURE_VISION_ENDPOINT // Endpoint da API
+);
 
 function imageToBase64(imagePath) {
   try {
@@ -26,6 +38,56 @@ function imageToBase64(imagePath) {
     throw error;
   }
 }
+
+async function checkImageDimensions(imagePath) {
+  try {
+    // Obtém as informações de metadata da imagem (incluindo dimensões)
+    const metadata = await sharp(imagePath).metadata();
+
+    // Exibe as dimensões da imagem
+    console.log(`A imagem tem ${metadata.width} x ${metadata.height} pixels`);
+
+    // Verifica se as dimensões estão dentro do intervalo permitido
+    if (
+      metadata.width < 50 || metadata.height < 50 ||
+      metadata.width > 10000 || metadata.height > 10000
+    ) {
+      console.error('As dimensões da imagem estão fora do intervalo permitido pela Azure Vision API.');
+    } else {
+      console.log('As dimensões da imagem estão dentro do intervalo permitido.');
+    }
+  } catch (error) {
+    console.error('Erro ao verificar as dimensões da imagem:', error);
+  }
+}
+
+async function resizeImageIfNeeded(imagePath, finalPath) {
+  try {
+    const metadata = await sharp(imagePath).metadata();
+    let width = metadata.width;
+    let height = metadata.height;
+
+    while (      
+      width < 50 || height < 50
+    ) {
+      // Redimensiona a imagem para caber no limite permitido
+      width *= 2;
+      height *= 2;
+      const resizedImage = await sharp(imagePath)
+        .resize({
+          width: width, // Ajusta a largura para no máximo  
+          height: height, // Ajusta a altura para no máximo 
+          fit: sharp.fit.inside, // Mantém a proporção
+        })
+        .toFile(finalPath);
+
+      //console.log('Imagem redimensionada com sucesso:', finalPath);
+    } 
+  } catch (error) {
+    console.error('Erro ao redimensionar a imagem:', error);
+  }
+}
+
 
 exports.readImageWithAI = async (imagePath) => {
   try {
@@ -135,6 +197,45 @@ exports.checkVoted = async (imagePath) => {
   } catch (error) {
     console.error('Erro ao ler a imagem:', error);
     throw new Error('Erro ao processar a imagem para contagem de pixels');
+  }
+};
+
+exports.readImageWithAzureVision = async (imagePath) => {
+  try {
+    //checkImageDimensions(imagePath);
+    // Lê a imagem como um buffer para enviar para a API
+    const finalPath = imagePath.split('.')[0] + 'Resized' +'.'+ imagePath.split('.')[1];
+
+    _ = await resizeImageIfNeeded(imagePath, finalPath);
+    
+    const imageBuffer = fs.readFileSync(fs.existsSync(finalPath) ? finalPath : imagePath);
+
+    // Envia a imagem para o Azure Vision API para extrair texto
+    const result = await azureVisionClient.readInStream(imageBuffer);
+
+    // Extrai o ID da operação
+    const operationId = result.operationLocation.split('/').slice(-1)[0];
+
+    // Verifica o status da operação para obter os resultados
+    let readResult;
+    while (true) {
+      readResult = await azureVisionClient.getReadResult(operationId);
+      if (readResult.status === 'succeeded') {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // Aguarda 1 segundo
+    }
+
+    // Extrai os números do texto lido pela API
+    const regex = /^\d{4}-\d{4}-\d{5}$/
+    let filtrado = readResult.analyzeResult.readResults[0].lines.filter(l =>{
+      return regex.test(l.text);
+    })
+
+    return filtrado;
+  } catch (error) {
+    console.error('Erro ao processar a imagem com Azure Vision:', error);
+    throw new Error('Erro ao processar a imagem com Azure Vision');
   }
 };
 

@@ -3,6 +3,49 @@ const path = require('path');
 const sharp = require('sharp');
 const fs = require('fs');
 
+async function combineImagesVertically(imageParts, outputCombinedPath) {
+  try {
+    // Lê os buffers de todas as partes das imagens
+    const images = await Promise.all(imageParts.map(part => sharp(part).toBuffer()));
+
+    // Obtém os metadados da primeira imagem (assumindo que todas têm a mesma largura)
+    const { width } = await sharp(images[0]).metadata();
+
+    // Calcula a altura total da nova imagem (somatório das alturas de todas as partes)
+    const totalHeight = await images.reduce(async (sum, imgBuffer) => {
+      const { height } = await sharp(imgBuffer).metadata();
+      return (await sum) + height;
+    }, 0);
+
+    // Cria uma nova imagem combinada com a altura total e a largura das partes
+    let compositeOptions = [];
+    let currentHeight = 0;
+
+    // Monta as opções para o composite
+    for (let imgBuffer of images) {
+      const { height } = await sharp(imgBuffer).metadata();
+      compositeOptions.push({ input: imgBuffer, top: currentHeight, left: 0 });
+      currentHeight += height;
+    }
+
+    // Cria uma imagem base (branca) e faz o composite com todas as partes de uma só vez
+    await sharp({
+      create: {
+        width: width,
+        height: totalHeight,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 }, // Cor de fundo branca
+      },
+    })
+    .composite(compositeOptions) // Aplica o composite de todas as imagens
+    .toFile(outputCombinedPath); // Salva a imagem combinada
+
+    console.log('Imagem combinada salva:', outputCombinedPath);
+  } catch (error) {
+    console.error('Erro ao combinar as imagens:', error);
+  }
+}
+
 exports.processImage = async (req, res) => {
   try {
     // Verifica se o arquivo foi enviado
@@ -89,58 +132,31 @@ exports.splitImage = async (req, res) => {
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
         const left = Math.floor(col * (width / cols)) + 220 - (col * 5);
-        const top = Math.floor(row * (height / rows)) + 95 - (row * 4);
+        const top = Math.floor(row * (height / rows)) + 90 - (row * 4);
         const partWidth = Math.floor((width / cols) / 3);
-        const partHeight = Math.floor((height / rows) / 10.5);
+        const partHeight = Math.floor((height / rows) / 7);
 
         const outputPath = path.join(outputDir, `part_${row}_${col}_${filename}.jpg`);
-
         await sharp(trimmedImagePath)
           .extract({ left, top, width: partWidth, height: partHeight })
-          // .threshold(32) 
-          // .blur(1)
           .toFile(outputPath);
 
-        // const { data, info } = await sharp(outputPath).raw().toBuffer({ resolveWithObject: true });
-
-        // // Itera sobre cada pixel da imagem
-        // const newData = Buffer.from(data); // Cria uma cópia do buffer de dados
-        // const tolerance = 10; // Tolerância para comparação de cores (pode ajustar conforme necessário)
-        // const stampColor = { r: 0, g: 0, b: 0 };
-
-        // for (let i = 0; i < data.length; i += 3) {
-        //   const red = data[i];
-        //   const green = data[i + 1];
-        //   const blue = data[i + 2];
-
-        //   // Verifica se o pixel corresponde à cor do carimbo (dentro de uma tolerância)
-        //   if (
-        //     Math.abs(red - stampColor.r) <= tolerance &&
-        //     Math.abs(green - stampColor.g) <= tolerance &&
-        //     Math.abs(blue - stampColor.b) <= tolerance
-        //   ) {
-        //     // Substitui o pixel pela cor branca (255, 255, 255)
-        //     newData[i] = 255;   // R
-        //     newData[i + 1] = 255; // G
-        //     newData[i + 2] = 255; // B
-        //   }
-        // }
-
-        // // Converte o buffer de volta para uma imagem e salva no caminho de saída
-        // await sharp(newData, { raw: { width: info.width, height: info.height, channels: 3 } })
-        //   .toFile(outputPath);
-
-        // Realiza o OCR na parte da imagem e obtém o ID
-        //const idLido = await ocrService.readImage(outputPath, 'image/jpeg');
-        const idLido = await ocrService.readImageWithAI(outputPath);
-        result.push({
-          id: idLido,
-          votou: null
-        })
 
         splitImagePathsIds.push(outputPath);
-      }
+      }      
     }
+    // Combina todas as partes em uma única imagem
+    const combinedImagePath = path.join(outputDir, `combined_${filename}.jpg`);
+    await combineImagesVertically(splitImagePathsIds, combinedImagePath);
+
+    const ids = await ocrService.readImageWithAzureVision(combinedImagePath);
+
+    ids.forEach((id, index) => {
+      result.push({
+        id: id.text,
+        votou: null
+      });
+    });
 
     //VOTES
 
