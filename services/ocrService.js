@@ -3,6 +3,65 @@ const fs = require('fs');
 const path = require('path');
 const FormData = require('form-data');
 const { Jimp } = require("jimp");
+let OpenAI = require('openai');
+let dotenv = require("dotenv");
+dotenv.config();
+
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
+
+function imageToBase64(imagePath) {
+  try {
+    // Read the image as a binary buffer
+    const imageBuffer = fs.readFileSync(imagePath);
+
+    // Convert the buffer to a base64 string
+    const base64Image = imageBuffer.toString('base64');
+
+    return base64Image;
+  } catch (error) {
+    console.error('Error converting image to Base64:', error);
+    throw error;
+  }
+}
+
+exports.readImageWithAI = async (imagePath) => {
+  try {
+    // Lê a imagem como um buffer
+    const base64Image = imageToBase64(imagePath);
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "give me the numbers that you can read in the following image, answer me like you were an OCR, which means, only the numbers and nothing else." },
+            {
+              type: "image_url",
+              image_url: {
+                "url": `data:image/jpeg;base64,${base64Image}`,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    // Processa a resposta da API e retorna o texto ou número extraído
+    const extractedText = response.choices[0].message.content; // Isso depende da estrutura de resposta retornada pela API
+
+    // Extraindo apenas os números usando uma expressão regular
+    const extractedNumbers = extractedText.split("-").join("");
+
+    return extractedNumbers ? extractedNumbers : 'Nenhum número encontrado';
+  } catch (error) {
+    console.error('Erro ao chamar a API da OpenAI:', error);
+    throw new Error('Erro ao processar a imagem com a OpenAI');
+  }
+};
 
 
 exports.readImage = async (imagePath, mimetype) => {
@@ -43,7 +102,7 @@ exports.readImage = async (imagePath, mimetype) => {
 exports.checkVoted = async (imagePath) => {
   try {
     const image = await Jimp.read(imagePath);
-    const targetColor = { r: 84, g: 83, b: 96 }; // Exemplo: vermelho puro
+    const targetColor = { r: 84, g: 83, b: 96 };
 
     let matchingPixels = 0;
     const totalPixels = image.bitmap.width * image.bitmap.height;

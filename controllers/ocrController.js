@@ -67,9 +67,16 @@ exports.splitImage = async (req, res) => {
     let height = 1330;
     let rows = 5;
     let cols = 4;
-    const filename = req.file.originalname.split('.')[0];
+
     // Remove as bordas da imagem original e prepara para divisão
+    const filename = req.file.originalname.split('.')[0].replace(/[^a-zA-Z0-9]/g, '');
     const trimmedImagePath = path.join(outputDir, `trimmed_${filename}.jpg`);
+
+    // Verifica se o arquivo já existe e o remove se necessário
+    if (fs.existsSync(trimmedImagePath)) {
+      fs.unlinkSync(trimmedImagePath); // Remove o arquivo existente
+    }
+
     await sharp(imagePath)
       .extract({ left: 100, top: 170, width, height })
       .toFile(trimmedImagePath);
@@ -83,29 +90,61 @@ exports.splitImage = async (req, res) => {
       for (let col = 0; col < cols; col++) {
         const left = Math.floor(col * (width / cols)) + 220 - (col * 5);
         const top = Math.floor(row * (height / rows)) + 95 - (row * 4);
-        const partWidth = Math.floor((width / cols)/3);
-        const partHeight = Math.floor((height / rows)/10.5);
+        const partWidth = Math.floor((width / cols) / 3);
+        const partHeight = Math.floor((height / rows) / 10.5);
 
         const outputPath = path.join(outputDir, `part_${row}_${col}_${filename}.jpg`);
 
         await sharp(trimmedImagePath)
           .extract({ left, top, width: partWidth, height: partHeight })
+          // .threshold(32) 
+          // .blur(1)
           .toFile(outputPath);
 
-          // Realiza o OCR na parte da imagem e obtém o ID
-          const idLido = await ocrService.readImage(outputPath, 'image/jpeg');
-          result.push({
-            id: idLido,
-            votou: null
-          })
+        // const { data, info } = await sharp(outputPath).raw().toBuffer({ resolveWithObject: true });
 
-          splitImagePathsIds.push(outputPath);
+        // // Itera sobre cada pixel da imagem
+        // const newData = Buffer.from(data); // Cria uma cópia do buffer de dados
+        // const tolerance = 10; // Tolerância para comparação de cores (pode ajustar conforme necessário)
+        // const stampColor = { r: 0, g: 0, b: 0 };
+
+        // for (let i = 0; i < data.length; i += 3) {
+        //   const red = data[i];
+        //   const green = data[i + 1];
+        //   const blue = data[i + 2];
+
+        //   // Verifica se o pixel corresponde à cor do carimbo (dentro de uma tolerância)
+        //   if (
+        //     Math.abs(red - stampColor.r) <= tolerance &&
+        //     Math.abs(green - stampColor.g) <= tolerance &&
+        //     Math.abs(blue - stampColor.b) <= tolerance
+        //   ) {
+        //     // Substitui o pixel pela cor branca (255, 255, 255)
+        //     newData[i] = 255;   // R
+        //     newData[i + 1] = 255; // G
+        //     newData[i + 2] = 255; // B
+        //   }
+        // }
+
+        // // Converte o buffer de volta para uma imagem e salva no caminho de saída
+        // await sharp(newData, { raw: { width: info.width, height: info.height, channels: 3 } })
+        //   .toFile(outputPath);
+
+        // Realiza o OCR na parte da imagem e obtém o ID
+        //const idLido = await ocrService.readImage(outputPath, 'image/jpeg');
+        const idLido = await ocrService.readImageWithAI(outputPath);
+        result.push({
+          id: idLido,
+          votou: null
+        })
+
+        splitImagePathsIds.push(outputPath);
       }
     }
 
     //VOTES
 
-    outputDir = path.resolve('uploads/votes'); 
+    outputDir = path.resolve('uploads/votes');
 
     // Certifique-se de que o diretório de saída existe
     if (!fs.existsSync(outputDir)) {
@@ -126,8 +165,8 @@ exports.splitImage = async (req, res) => {
       for (let col = 0; col < cols; col++) {
         const left = Math.floor(col * (width / cols)) + 130 - (col * 5);
         const top = Math.floor(row * (height / rows)) + 115 - (row * 4);
-        const partWidth = Math.floor((width / cols)*0.70);
-        const partHeight = Math.floor((height / rows)/2);
+        const partWidth = Math.floor((width / cols) * 0.70);
+        const partHeight = Math.floor((height / rows) / 2);
 
         const outputPath = path.join(outputDir, `part_${row}_${col}_${filename}.jpg`);
 
@@ -135,15 +174,15 @@ exports.splitImage = async (req, res) => {
           .extract({ left, top, width: partWidth, height: partHeight })
           .toFile(outputPath);
 
-          // Realiza o OCR na parte da imagem e obtém o ID
-          const votou = await ocrService.checkVoted(outputPath);
-          result[i].votou = votou;
-          i++;
+        // Realiza o OCR na parte da imagem e obtém o ID
+        const votou = await ocrService.checkVoted(outputPath);
+        result[i].votou = votou.votou;
+        i++;
 
-          splitImagePathsVotes.push(outputPath);
+        splitImagePathsVotes.push(outputPath);
       }
     }
-    
+
     res.json(result);
   } catch (error) {
     console.error('Erro ao dividir a imagem:', error);
