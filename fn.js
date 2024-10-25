@@ -71,10 +71,15 @@ async function readImageWithTesseract(imagePath) {
 
     const { data: { text } } = await Tesseract.recognize(fs.existsSync(finalPath) ? finalPath : imagePath, 'por');
 
-    const regex = /^\d{4}-\d{4}-\d{5}$/;
-    let filtrado = text.split('\n').filter(line => regex.test(line.trim()));
+    // Definindo o regex para buscar o padrão dentro da string
+    const regex = /\d{4}-\d{4}-\d{5}/;
 
-    return filtrado;
+    // Usar match para buscar a substring que corresponde ao regex
+    const match = text.match(regex);
+
+    // Se houver um match, retornamos o valor, caso contrário, retornamos null
+    return match ? match[0] : null;
+
   } catch (error) {
     console.error('Erro ao processar a imagem com Tesseract:', error);
     throw new Error('Erro ao processar a imagem com Tesseract');
@@ -188,51 +193,51 @@ async function splitImage(base64Image) {
     const splitImagePathsIds = [];
     let result = [];
 
-    //IDs
+    //IDs    
 
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const left = Math.floor(col * (width / cols)) + 220 - (col * 5);
-        const top = Math.floor(row * (height / rows)) + 90 - (row * 4);
-        const partWidth = Math.floor((width / cols) / 3);
-        const partHeight = Math.floor((height / rows) / 7);
-
-        const outputPath = path.join(tempDir, `part_${row}_${col}_${filename}.jpg`);
-        await sharp(trimmedImagePath)
-          .extract({ left, top, width: partWidth, height: partHeight })
-          .toFile(outputPath);
-
-        splitImagePathsIds.push(outputPath);
-      }
-    }
-
-    const combinedImagePath = path.join(tempDir, `combined_${filename}.jpg`);
-    await combineImagesVertically(splitImagePathsIds, combinedImagePath);
+    // const combinedImagePath = path.join(tempDir, `combined_${filename}.jpg`);
+    // await combineImagesVertically(splitImagePathsIds, combinedImagePath);
 
     try {
-      const ids = await readImageWithTesseract(combinedImagePath);
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const left = Math.floor(col * (width / cols)) + 220 - (col * 5);
+          const top = Math.floor(row * (height / rows)) + 100 - (row * 4);
+          const partWidth = Math.floor((width / cols) / 3);
+          const partHeight = Math.floor((height / rows) / 12);
 
-      ids.forEach((id) => {
-        result.push({
-          id: id,
-          votou: null
-        });
-      });
-      if (ids.length != 20) {
-        throw ("unable to verify all");
-        //Não tem como enviar de forma parcial, pois não há garantia de que o validor de checkvoted vai estar sendo aplicado para o id correto
+          const outputPath = path.join(tempDir, `part_${row}_${col}_${filename}.jpg`);
+          await sharp(trimmedImagePath)
+            .extract({ left, top, width: partWidth, height: partHeight })
+            .toFile(outputPath);
+
+          splitImagePathsIds.push(outputPath);
+          const id = await readImageWithTesseract(outputPath);
+          if (id) {
+            result.push({
+              id: id,
+              votou: null,
+              primeiroNome: null,
+              ultimoNome: null,
+              apelido: null,
+              needsRevision: false
+            })
+          } else {
+            const timestamp = new Date().toISOString();
+            result.push({
+              id: `error_${timestamp}`,
+              votou: null,
+              primeiroNome: null,
+              ultimoNome: null,
+              apelido: null,
+              needsRevision: true
+            });
+          }
+        }
       }
     } catch (error) {
       // If error occurs, set error identifier and needsRevision flag
-      const timestamp = new Date().toISOString();
-      result.push({
-        id: `error_${timestamp}`,
-        votou: null,
-        primeiroNome: null,
-        ultimoNome: null,
-        apelido: null,
-        needsRevision: true
-      });
+      throw (error);
     }
 
 
@@ -288,23 +293,11 @@ async function splitImage(base64Image) {
             result[i].ultimoNome = infoNome.ultimoNome;
             result[i].apelido = infoNome.apelido;
           }
-          if (names.length != 20 && result.filter(r =>{
-            return r.needsRevision == true
-          }).length == 0) {
-            throw ("unable to verify all");
-            //Não tem como enviar de forma parcial, pois não há garantia de que o validor de checkvoted vai estar sendo aplicado para o id correto
-          }
         } catch (error) {
           // If error occurs, set error identifier and needsRevision flag
           const timestamp = new Date().toISOString();
-          result.push({
-            id: `error_${timestamp}`,
-            votou: null,
-            primeiroNome: null,
-            ultimoNome: null,
-            apelido: null,
-            needsRevision: true
-          });          
+          result[i].primeiroNome = `error_${timestamp}`;
+          result[i].needsRevision = true;
         }
         i++;
 
@@ -312,14 +305,14 @@ async function splitImage(base64Image) {
       }
     }
 
-      // Clean up temporary files
-      // fs.unlinkSync(imagePath);
-      // fs.unlinkSync(trimmedImagePath);
-      // splitImagePathsIds.forEach(p => fs.unlinkSync(p));
-      // splitImagePathsVotes.forEach(p => fs.unlinkSync(p));
-      // fs.unlinkSync(combinedImagePath);
+    // Clean up temporary files
+    // fs.unlinkSync(imagePath);
+    // fs.unlinkSync(trimmedImagePath);
+    // splitImagePathsIds.forEach(p => fs.unlinkSync(p));
+    // splitImagePathsVotes.forEach(p => fs.unlinkSync(p));
+    // fs.unlinkSync(combinedImagePath);
 
-      //comentado pois estava dando erro
+    //comentado pois estava dando erro
     return result;
   } catch (error) {
     console.error('Erro ao dividir a imagem:', error);

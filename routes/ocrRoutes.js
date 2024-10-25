@@ -9,5 +9,6 @@ const upload = multer({ dest: 'uploads/' }); // Pasta onde os arquivos serão ar
 // router.post('/upload', upload.single('image'), ocrController.processImage);
 // router.post('/checkvoted', upload.single('image'), ocrController.checkVoted);
 router.post('/tratarVotantes', upload.single('image'), ocrController.splitImage);
+router.get('/recuperarEleitores', ocrController.getJson);
 
 module.exports = router;

@@ -1,6 +1,11 @@
 const express = require('express');
+const cors = require('cors'); // Importar o middleware cors
+
+
 const app = express();
-const port = 3000;
+// Habilitar CORS para todas as rotas
+app.use(cors());
+const port = 3300;
 const ocrRoutes = require('./routes/ocrRoutes');
 
 app.use(express.json({ limit: '50mb' })); // Define o limite para 50 MB

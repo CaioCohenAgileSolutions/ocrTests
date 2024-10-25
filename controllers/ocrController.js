@@ -37,8 +37,8 @@ async function combineImagesVertically(imageParts, outputCombinedPath) {
         background: { r: 255, g: 255, b: 255 }, // Cor de fundo branca
       },
     })
-    .composite(compositeOptions) // Aplica o composite de todas as imagens
-    .toFile(outputCombinedPath); // Salva a imagem combinada
+      .composite(compositeOptions) // Aplica o composite de todas as imagens
+      .toFile(outputCombinedPath); // Salva a imagem combinada
 
     console.log('Imagem combinada salva:', outputCombinedPath);
   } catch (error) {
@@ -151,7 +151,7 @@ exports.splitImage = async (req, res) => {
 
 
         splitImagePathsIds.push(outputPath);
-      }      
+      }
     }
     // Combina todas as partes em uma única imagem
     const combinedImagePath = path.join(outputDir, `combined_${filename}.jpg`);
@@ -213,4 +213,40 @@ exports.splitImage = async (req, res) => {
     res.status(500).json({ error: 'Erro ao dividir a imagem' });
   }
 };
+
+exports.getJson = async (req, res) => {
+  try {
+    const { sortBy, filterBy, currentPage } = req.query; // Parâmetros de ordenação e filtro recebidos via GET
+    const itemsPerPage = 5; // Número de itens por página
+    // Filtra os dados mockados
+
+    // Caminho para o arquivo mockData.json
+    const dataPath = path.join(__dirname, './registros.json');
+
+    // Ler e parsear os dados do arquivo JSON
+    const rawData = fs.readFileSync(dataPath, 'utf-8');
+    const mockData = JSON.parse(rawData);
+
+    let filteredData = ocrService.filterData(mockData, filterBy);
+
+    let totalItems = filteredData.length;
+
+    // Ordena os dados filtrados
+    let sortedData = ocrService.sortData(filteredData, sortBy);
+
+    const startIndex = (+currentPage - 1) * itemsPerPage; // Índice inicial
+    const endIndex = startIndex + itemsPerPage; // Índice final
+    const paginatedData = sortedData.slice(startIndex, endIndex); // Fatia os dados de acordo com a página
+
+    // Retorna o JSON com os dados paginados
+    let response = {
+      "total": totalItems,
+      "data": paginatedData
+    }
+    res.json(response);
+  } catch (error) {
+    console.error('Erro ao recuperar os dados:', error);
+    res.status(500).json({ error: 'Erro ao recuperar os dados' });
+  }
+}
 

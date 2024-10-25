@@ -5,6 +5,7 @@ const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 const Tesseract = require('tesseract.js');
 const functions = require('@google-cloud/functions-framework');
+let OpenAI = require('openai');
 
 // Helper functions
 async function resizeImageIfNeeded(imagePath, finalPath) {
@@ -180,9 +181,9 @@ async function splitImage(base64Image) {
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
         const left = Math.floor(col * (width / cols)) + 130 - (col * 5);
-        const top = Math.floor(row * (height / rows)) + 115 - (row * 4);
+        const top = Math.floor(row * (height / rows)) + 120 - (row * 4);
         const partWidth = Math.floor((width / cols) * 0.70);
-        const partHeight = Math.floor((height / rows) / 2);
+        const partHeight = Math.floor((height / rows) / 3);
 
         const outputPath = path.join(tempDir, `part_vote_${row}_${col}_${filename}.jpg`);
 
