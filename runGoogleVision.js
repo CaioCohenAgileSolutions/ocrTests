@@ -1,14 +1,10 @@
-const { PubSub } = require('@google-cloud/pubsub');
 const sharp = require('sharp');
 const fs = require('fs');
 const path = require('path');
 let dotenv = require("dotenv");
-const os = require('os');
-const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const Tesseract = require('tesseract.js');
-const { ComputerVisionClient } = require('@azure/cognitiveservices-computervision');
-const { ApiKeyCredentials } = require('@azure/ms-rest-js');
+const vision = require('@google-cloud/vision');
 let OpenAI = require('openai');
 
 dotenv.config();
@@ -16,93 +12,52 @@ dotenv.config();
 //   apiKey: process.env.OPENAI_API_KEY
 // });
 
-async function readImageWithGPT(imagePath) {
+// Creates a client for Google Vision
+const clientGoogleVision = new vision.ImageAnnotatorClient();
+
+async function readImageWithGoogleVision(imagePath) {
   try {
-    // Lê a imagem do caminho e converte para Base64
-    const imageBuffer = fs.readFileSync(imagePath);
-    const imageBase64 = imageBuffer.toString('base64');
+      // Reads the image file into a buffer
+      const [result] = await clientGoogleVision.textDetection(imagePath);
+      const detections = result.textAnnotations;
 
-    // Prepara o prompt para ser enviado junto com a imagem (se necessário)
-    const prompt = "Por favor, analise a imagem fornecida.";
+      if (!detections.length) {
+          throw new Error('No text detected in the image.');
+      }
 
-    // Enviar a imagem para a API do OpenAI junto com o prompt
-    const response = await openai.chat.completions.create({
-      model: "gpt-4",
-      messages: [
-        {
-          role: 'system',
-          content: `Você é um assistente que irá receber uma página de um caderno com informações de 20 eleitores e precisa retornar uma lista de objetos no formato: 
-          {
-            identidad: null,
-            votou: null,
-            primeiroNome: null,
-            ultimoNome: null,
-            apelido: null,
-            needsRevision: false,
-          } 
-          para cada eleitor. O 'needsRevision' virá, como padrão, false. Você saberá se o eleitor votou ou não se existir um carimbo na célula dele. Caso você não consiga ler a identidade do eleitor, talvez porque o carimbo atrapalhou, deixe a identidade como null e marque o 'needsRevision' como true.`,
-        },
-        {
-          role: 'user',
-          content: `${prompt} A imagem está em Base64: ${imageBase64}`,
-        },
-      ],
-    });
+      // You can get the full OCR text like this:
+      const fullText = detections[0].description;
 
-    // Retorna a resposta da API
-    console.log(response.data);
-    return response.data;
+      // Process the text annotations and extract details for each voter
+      const voters = [];
+      return parseOCRResult(fullText);
+
+      return voters;
 
   } catch (error) {
-    console.error('Erro ao enviar a imagem para o GPT:', error.message);
-    throw error;
+      console.error('Error during text detection with Google Vision:', error);
+      throw error;
   }
 }
 
-
-const azureVisionClient = new ComputerVisionClient(
-  new ApiKeyCredentials({
-    inHeader: { 'Ocp-Apim-Subscription-Key': process.env.AZURE_VISION_KEY }, // Chave de API
-  }),
-  process.env.AZURE_VISION_ENDPOINT // Endpoint da API
-);
 
 // Defina a tolerância inicial para a cor amarela
 function parseOCRResult(ocrData) {
   let result = {
     identidad: null,
     votou: null,
-    primeiroNome: null,
-    ultimoNome: null,
-    apelido: null,
+    fullTextInfo: null,
     needsRevision: false,
   };
-
-  for (let i = 0; i < ocrData.length; i++) {
-    if (ocrData[i].text.includes("Ape")) {
-      i++;
-      result.apelido = ocrData[i].text; // Pega o restante como apelido
-      continue;
-    }
-    // Verifica se o item contém a palavra "Nombres" para extrair o primeiro nome
-    if (ocrData[i].text.includes("Nom")) {
-      i++;
-      const fullName = ocrData[i].text.split(' ');
-      result.primeiroNome = fullName[0]; // Primeiro nome
-      result.ultimoNome = fullName[1]; // Último nome
-      continue;
-    }
-
-    if (ocrData[i].text.includes("Id")) {
-      i++;
-      result.identidad = ocrData[i].text; // Número de identidade
-    }
-  }
-
   const regex = /\d{4}-\d{4}-\d{5}/;
-  const match = result?.identidad?.match(regex);
-  result.identidad = match ? match[0] : null;
-  // Se algum campo essencial (primeiroNome ou identidad) estiver ausente, marcar needsRevision como true
+  let matches = ocrData.match(regex);
+  if(matches?.length > 0){
+    result.identidad = matches[0];
+  }else{
+    result.identidad = "nao reconhecido"
+  }
+  result.fullTextInfo = ocrData;
+
   if (!result.identidad) {
     result.needsRevision = true;
   }
@@ -122,119 +77,6 @@ async function readWithTesseract(imagePath, regex = null) {
     console.error('Erro ao processar a imagem com Tesseract:', error);
     throw new Error('Erro ao processar a imagem com Tesseract');
   }
-}
-
-async function readImageWithAzureVision(imagePath) {
-  try {
-
-    const imageBuffer = fs.readFileSync(imagePath);
-
-    // Envia a imagem para o Azure Vision API para extrair texto
-    const result = await azureVisionClient.readInStream(imageBuffer);
-
-    // Extrai o ID da operação
-    const operationId = result.operationLocation.split('/').slice(-1)[0];
-
-    // Verifica o status da operação para obter os resultados
-    let readResult;
-    while (true) {
-      readResult = await azureVisionClient.getReadResult(operationId);
-      if (readResult.status === 'succeeded') {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1000)); // Aguarda 1 segundo
-    }
-
-    const parsedResult = parseOCRResult(readResult.analyzeResult.readResults[0].lines);
-
-    return parsedResult;
-  } catch (error) {
-    let result = {
-      identidad: null,
-      votou: null,
-      primeiroNome: null,
-      ultimoNome: null,
-      apelido: null,
-      needsRevision: true,
-    };
-
-    return result;
-  }
-};
-
-// Helper function to read names using Tesseract
-async function readNamesAzureVision(imagePath) {
-  try {
-    if (!fs.existsSync(imagePath)) {
-      console.warn(`Arquivo não encontrado: ${imagePath}`);
-      return '';
-    }
-
-    //const enhancedImagePath = await enhanceImage(imagePath);
-    const result = readImageWithAzureVision(imagePath);
-
-    // Helper function to enhance image contrast
-    async function enhanceImage(inputPath) {
-      const outputPath = `${inputPath}_enhanced.jpg`;
-      await sharp(inputPath)
-        .normalize()
-        .modulate({ brightness: 1, saturation: 1.5 })
-        .sharpen()
-        .toFile(outputPath);
-      return outputPath;
-    }
-    // console.log(text);
-    return result;
-  } catch (error) {
-    console.error('Erro ao processar a imagem com Tesseract:', error);
-    return '';
-  }
-}
-
-// Helper function to process the string and return object with information
-function processString(input) {
-  const lines = input.split('\n');
-  let apelidos, nombres, identidad;
-
-  for (const line of lines) {
-    if (line.toLowerCase().includes('apelidos:') || line.toLowerCase().includes('dos:')) {
-      apelidos = line.split(/(?:Apelidos:|dos:)\s*/i)[1]?.trim();
-    } else if (line.toLowerCase().includes('nombres:') || line.toLowerCase().includes('bres:')) {
-      nombres = line.split(/(?:Nombres:|bres:)\s*/i)[1]?.trim();
-    } else if (line.toLowerCase().includes('identidad:') || line.toLowerCase().includes('idad:')) {
-      identidad = line.split(/(?:Identidad:|idad:)\s*/i)[1]?.trim();
-    }
-  }
-
-  // If identidad is not found in the usual format, search for it in the entire input
-
-  // Definindo o regex para buscar o padrão dentro da string
-  const regex = /\d{4}-\d{4}-\d{5}/;
-
-  // Usar match para buscar a substring que corresponde ao regex
-  let match = identidad?.match(regex);
-
-  // Se houver um match, retornamos o valor, caso contrário, retornamos null
-  identidad = match ? match[0] : null;
-
-  let needsRevision = false;
-  if (!identidad) {
-    const identidadMatch = input.match(/\d{4}-\d{4}-\d{5}/);
-    if (identidadMatch) {
-      identidad = identidadMatch[0];
-    }
-  } else if (identidad.match(/\d{4}-\d{4}-\d{5}.+/)) {
-    identidad = identidad.match(/\d{4}-\d{4}-\d{5}/)[0];
-    needsRevision = true;
-  }
-
-  return {
-    apelido: apelidos,
-    primeiroNome: nombres ? nombres.split(' ')[0] : '',
-    ultimoNome: nombres ? nombres.split(' ').slice(1).join(' ') : '',
-    identidad: identidad ? identidad.replace(/(\d{4})(\d{4})(\d{5}).*/, '$1-$2-$3') : '',
-    needsRevision: needsRevision
-  };
 }
 
 // Helper function to check for "voted" status in the image
@@ -334,9 +176,6 @@ async function cutImageBorders(imagePath) {
     const image = sharp(imagePath);
     const { width, height } = await image.metadata();
 
-    // Analyze the image to find the rotation angle
-    const rotationAngle = await findRotationAngle(image);
-
     // Rotate the image if necessary
     //const rotatedImage = rotationAngle !== 0 ? image.rotate(rotationAngle) : image;
 
@@ -359,9 +198,6 @@ async function cutImageBorders(imagePath) {
 
     //checa onde esta o primeiro pixel amarelo da esquerda pra direita, comecando do meio da imagem
     for (let x = 0; x < width; x++) {
-      if (x == 87) {
-        console.log("");
-      }
       let y = Math.floor(height / 2);
       if (isTransitionFromWhiteToYellow(data, x, y, width, height)) {
         x1 = x;
@@ -380,9 +216,6 @@ async function cutImageBorders(imagePath) {
 
     //checa onde esta o primeiro pixel amarelo de cima pra baixo, comecando do meio da imagem
     for (let y = 0; y < height; y++) {
-      if (y == 39) {
-        console.log("");
-      }
       if (isTransitionFromWhiteToYellow(data, Math.floor(width / 2), y, width, height)) {
         y1 = y;
         console.log(`Found top border at ${y1}`);
@@ -411,7 +244,7 @@ async function cutImageBorders(imagePath) {
 
     //console.log({ width, height, left, top, cropWidth, cropHeight });
 
-    console.log(`Cutting operation: left=${left}, top=${top}, width=${cropWidth}, height=${cropHeight}`);
+    //console.log(`Cutting operation: left=${left}, top=${top}, width=${cropWidth}, height=${cropHeight}`);
 
     // Verificar se as dimensões de corte são válidas
     // if (cropWidth < 500 || cropHeight < 500) {
@@ -439,38 +272,6 @@ async function cutImageBorders(imagePath) {
     console.error('Error in cutImageBorders:', error);
     throw error;
   }
-}
-
-// Helper function to find the rotation angle
-async function findRotationAngle(image) {
-  const { data, info } = await image.raw().toBuffer({ resolveWithObject: true });
-  const { width, height } = info;
-
-  let maxLineLength = 0;
-  let bestAngle = 0;
-
-  for (let y = 0; y < height; y += 10) { // Check every 10th row for efficiency
-    let lineStart = -1;
-    let lineEnd = -1;
-
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 3;
-      const isBlack = data[idx] < 50 && data[idx + 1] < 50 && data[idx + 2] < 50;
-
-      if (isBlack) {
-        if (lineStart === -1) lineStart = x;
-        lineEnd = x;
-      }
-    }
-
-    if (lineEnd - lineStart > maxLineLength) {
-      maxLineLength = lineEnd - lineStart;
-      const angle = Math.atan2(10, lineEnd - lineStart) * (180 / Math.PI);
-      bestAngle = angle;
-    }
-  }
-
-  return bestAngle;
 }
 
 // Helper function to split image into parts
@@ -583,10 +384,8 @@ async function splitImage(imagePath) {
                 .toFile(votePath);
             });
 
-          if (row == 1) {
-            console.log("");
-          }
-          const infoText = await readNamesAzureVision(infoPath);
+          //const infoText = await readNamesAzureVision(infoPath);
+          const infoText = await readImageWithGoogleVision(infoPath);
           const title = result.length > 0 ? result[0].title : await readWithTesseract(titlePath);
           const number = await readWithTesseract(numberPath);
 
@@ -605,7 +404,7 @@ async function splitImage(imagePath) {
           });
 
           // Não remova os arquivos temporários para que possamos visualizá-los
-          console.log(`Arquivos salvos: ${cellPath}, ${infoPath}, ${votePath}`);
+          //(`Arquivos salvos: ${cellPath}, ${infoPath}, ${votePath}`);
         } else {
           console.warn(`Skipping cell ${row}_${col} devido a dimensões inválidas`);
         }

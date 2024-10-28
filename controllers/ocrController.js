@@ -2,6 +2,7 @@ const ocrService = require('../services/ocrService');
 const path = require('path');
 const sharp = require('sharp');
 const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
 
 async function combineImagesVertically(imageParts, outputCombinedPath) {
   try {
@@ -67,29 +68,9 @@ exports.processImage = async (req, res) => {
   }
 };
 
-exports.checkVoted = async (req, res) => {
-  try {
-    // Verifica se o arquivo foi enviado
-    if (!req.file) {
-      return res.status(400).json({ error: 'Nenhuma imagem enviada' });
-    }
-
-    // Obtém o caminho completo do arquivo salvo
-    const imagePath = path.resolve(req.file.path);
-
-    // Chama o serviço para contar os pixels
-    const result = await ocrService.checkVoted(imagePath);
-
-    // Retorna o resultado
-    res.json(result);
-  } catch (error) {
-    console.error('Erro ao processar a imagem:', error);
-    res.status(500).json({ error: 'Erro ao processar a imagem' });
-  }
-};
-
 exports.splitImage = async (req, res) => {
   try {
+    const tempDir = './tmp';
     if (!req.body.base64Image) {
       return res.status(400).json({ error: 'Nenhuma imagem em Base64 enviada' });
     }
@@ -107,112 +88,156 @@ exports.splitImage = async (req, res) => {
     }
 
     // Define o caminho do arquivo temporário para armazenar a imagem convertida de Base64
-    const filename = 'temp_image';
-    const imagePath = path.join(outputDir, filename + '.jpg');
+    const filename = `temp_image_${uuidv4()}`;
+    const imagePath = path.join(outputDir, filename+ '.jpg');
 
     // Escreve o buffer (imagem convertida de Base64) para um arquivo temporário
     fs.writeFileSync(imagePath, buffer);
+    // First, remove the borders
+    const cuttedImagePath = await ocrService.cutImageBorders(imagePath);
+    const resizedImagePath = await ocrService.resizeImage(cuttedImagePath);
+    const cuttedResizedImagePath = await ocrService.cutResizedBorders(resizedImagePath);
 
-    // Parâmetros para o corte da imagem (ajuste conforme necessário)
-    let width = 2050;
-    let height = 1330;
-    let rows = 5;
-    let cols = 4;
+    const { width, height } = await sharp(cuttedResizedImagePath).metadata();
 
-    // Remove as bordas da imagem original e prepara para divisão
-    //const filename = req.file.originalname.split('.')[0].replace(/[^a-zA-Z0-9]/g, '');
-    const trimmedImagePath = path.join(outputDir, `trimmed_${filename}.jpg`);
+    const rows = 5;
+    const cols = 4;
+    const result = [];
 
-    // Verifica se o arquivo já existe e o remove se necessário
-    if (fs.existsSync(trimmedImagePath)) {
-      fs.unlinkSync(trimmedImagePath); // Remove o arquivo existente
-    }
-
-    await sharp(imagePath)
-      .extract({ left: 100, top: 170, width, height })
-      .toFile(trimmedImagePath);
-
-    // Array para armazenar os caminhos das imagens geradas
-    const splitImagePathsIds = [];
-    let result = [];
-
-    // Divide a imagem em 20 partes (5 linhas x 4 colunas)
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
-        const left = Math.floor(col * (width / cols)) + 220 - (col * 5);
-        const top = Math.floor(row * (height / rows)) + 90 - (row * 4);
-        const partWidth = Math.floor((width / cols) / 3);
-        const partHeight = Math.floor((height / rows) / 7);
+        const cellWidth = Math.ceil(width / cols);
+        const cellHeight = Math.ceil(height / rows);
+        const cellLeft = col * cellWidth;
+        const cellTop = row * cellHeight;
 
-        const outputPath = path.join(outputDir, `part_${row}_${col}_${filename}.jpg`);
-        await sharp(trimmedImagePath)
-          .extract({ left, top, width: partWidth, height: partHeight })
-          .toFile(outputPath);
+        if (cellWidth > 0 && cellHeight > 0) {
 
+          //Titulo
+          const titlePath = path.join(tempDir, `title${filename}.jpg`);
+          const titleDirectory = path.dirname(titlePath);
 
-        splitImagePathsIds.push(outputPath);
+          if (!fs.existsSync(titleDirectory)) {
+            fs.mkdirSync(titleDirectory, { recursive: true });
+          }
+          await sharp(resizedImagePath)
+            .extract({
+              left: 400,
+              top: 20,
+              width: 1270,
+              height: 110
+            })
+            .toFile(titlePath);
+
+          //Celulas
+          const cellPath = path.join(tempDir, `cell_${row}_${col}_${filename}.jpg`);
+          await sharp(cuttedResizedImagePath)
+            .extract({
+              left: cellLeft,
+              top: cellTop,
+              width: Math.min(cellWidth, width - cellLeft),
+              height: Math.min(cellHeight, height - cellTop)
+            })
+            .toFile(cellPath);
+
+          //numero
+          const numberPath = path.join(tempDir, `num_${row}_${col}_${filename}.jpg`);
+          await sharp(cellPath)
+            .metadata()
+            .then(metadata => {
+              const errorMargin = 0.05;
+              const infoLeft = 10;
+              const infoTop = 142;
+              const infoWidth = 130;
+              const infoHeight = 90;
+              return sharp(cellPath)
+                .extract({
+                  left: infoLeft,
+                  top: infoTop,
+                  width: Math.min(infoWidth, metadata.width - infoLeft),
+                  height: Math.min(infoHeight, metadata.height - infoTop)
+                })
+                .toFile(numberPath);
+            });
+
+          //as Info
+          const infoPath = path.join(tempDir, `info_${row}_${col}_${filename}.jpg`);
+          await sharp(cellPath)
+            .metadata()
+            .then(metadata => {
+              const errorMargin = 0.05;
+              const infoLeft = Math.floor(metadata.width * (1 / 4));
+              const infoTop = Math.floor(metadata.height * (1 / 4) * (1 - errorMargin));
+              const infoWidth = Math.floor(metadata.width * (3 / 4));
+              const infoHeight = Math.floor(metadata.height * (1 / 4) * (1 + errorMargin)); // Added 1% margin
+              return sharp(cellPath)
+                .extract({
+                  left: infoLeft,
+                  top: infoTop,
+                  width: Math.min(infoWidth, metadata.width - infoLeft),
+                  height: Math.min(infoHeight, metadata.height - infoTop)
+                })
+                .toFile(infoPath);
+            });
+
+          //Votos
+          const votePath = path.join(tempDir, `vote_${row}_${col}_${filename}.jpg`);
+          await sharp(cellPath)
+            .metadata()
+            .then(metadata => {
+              const voteLeft = Math.floor(metadata.width * (1 / 4));
+              const voteTop = Math.floor(metadata.height / 2);
+              const voteWidth = Math.floor(metadata.width * (3 / 4));
+              const voteHeight = Math.floor(metadata.height / 2);
+              return sharp(cellPath)
+                .extract({
+                  left: voteLeft,
+                  top: voteTop,
+                  width: Math.min(voteWidth, metadata.width - voteLeft),
+                  height: Math.min(voteHeight, metadata.height - voteTop)
+                })
+                .toFile(votePath);
+            });
+
+          //const infoText = await readNamesAzureVision(infoPath);
+          const infoText = await ocrService.readImageWithGoogleVision(infoPath);
+          console.log("INFO")
+          const title = result.length > 0 ? result[0].title : await ocrService.readWithTesseract(titlePath);
+          console.log("TITLE")
+          const number = await ocrService.readNumberWithGoogleVision(numberPath);
+          console.log("NUMBER")
+          //const infoData = processString(infoText);
+          const votou = await ocrService.checkVoted(votePath);
+
+          result.push({
+            id: infoText.identidad || `error_${new Date().toISOString()}`,
+            votou: votou.votou,
+            fullTextInfo: infoText.fullTextInfo,
+            needsRevision: infoText.needsRevision || (!infoText.identidad),
+            title: title,
+            number: number
+          });
+          ocrService.deleteTempFile(infoPath);
+          ocrService.deleteTempFile(numberPath);
+          ocrService.deleteTempFile(votePath);
+          // Não remova os arquivos temporários para que possamos visualizá-los
+          //(`Arquivos salvos: ${cellPath}, ${infoPath}, ${votePath}`);
+        } else {
+          console.warn(`Skipping cell ${row}_${col} devido a dimensões inválidas`);
+        }
       }
     }
-    // Combina todas as partes em uma única imagem
-    const combinedImagePath = path.join(outputDir, `combined_${filename}.jpg`);
-    await combineImagesVertically(splitImagePathsIds, combinedImagePath);
 
-    const ids = await ocrService.readImageWithAzureVision(combinedImagePath);
-
-    ids.forEach((id, index) => {
-      result.push({
-        id: id.text,
-        votou: null
-      });
-    });
-
-    //VOTES
-
-    outputDir = path.resolve('uploads/votes');
-
-    // Certifique-se de que o diretório de saída existe
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-
-    // Parâmetros para o corte da imagem (ajuste conforme necessário)
-    width = 2050;
-    height = 1330;
-    rows = 5;
-    cols = 4;
-
-    // Array para armazenar os caminhos das imagens geradas
-    const splitImagePathsVotes = [];
-    let i = 0;
-    // Divide a imagem em 20 partes (5 linhas x 4 colunas)
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const left = Math.floor(col * (width / cols)) + 130 - (col * 5);
-        const top = Math.floor(row * (height / rows)) + 115 - (row * 4);
-        const partWidth = Math.floor((width / cols) * 0.70);
-        const partHeight = Math.floor((height / rows) / 2);
-
-        const outputPath = path.join(outputDir, `part_${row}_${col}_${filename}.jpg`);
-
-        await sharp(trimmedImagePath)
-          .extract({ left, top, width: partWidth, height: partHeight })
-          .toFile(outputPath);
-
-        // Realiza o OCR na parte da imagem e obtém o ID
-        const votou = await ocrService.checkVoted(outputPath);
-        result[i].votou = votou.votou;
-        i++;
-
-        splitImagePathsVotes.push(outputPath);
-      }
-    }
+    // ocrService.deleteTempFile(cuttedImagePath);
+    // ocrService.deleteTempFile(resizedImagePath);
+    // ocrService.deleteTempFile(cuttedResizedImagePath);
 
     res.json(result);
   } catch (error) {
     console.error('Erro ao dividir a imagem:', error);
-    res.status(500).json({ error: 'Erro ao dividir a imagem' });
+    res.status(500).json({ success: false, message: 'Erro ao processar a imagem' });
   }
-};
+}
 
 exports.getJson = async (req, res) => {
   try {

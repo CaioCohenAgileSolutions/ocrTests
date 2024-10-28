@@ -8,10 +8,15 @@ let dotenv = require("dotenv");
 const sharp = require('sharp');
 const { ComputerVisionClient } = require('@azure/cognitiveservices-computervision');
 const { ApiKeyCredentials } = require('@azure/ms-rest-js');
+const Tesseract = require('tesseract.js');
+const vision = require('@google-cloud/vision');
+const { v4: uuidv4 } = require('uuid');
+
 
 
 dotenv.config();
 
+const clientGoogleVision = new vision.ImageAnnotatorClient();
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -67,7 +72,7 @@ async function resizeImageIfNeeded(imagePath, finalPath) {
     let width = metadata.width;
     let height = metadata.height;
 
-    while (      
+    while (
       width < 50 || height < 50
     ) {
       // Redimensiona a imagem para caber no limite permitido
@@ -82,12 +87,34 @@ async function resizeImageIfNeeded(imagePath, finalPath) {
         .toFile(finalPath);
 
       //console.log('Imagem redimensionada com sucesso:', finalPath);
-    } 
+    }
   } catch (error) {
     console.error('Erro ao redimensionar a imagem:', error);
   }
 }
 
+function parseOCRResult(ocrData) {
+  let result = {
+    identidad: null,
+    votou: null,
+    fullTextInfo: null,
+    needsRevision: false,
+  };
+  const regex = /\d{4}-\d{4}-\d{5}/;
+  let matches = ocrData.match(regex);
+  if (matches?.length > 0) {
+    result.identidad = matches[0];
+  } else {
+    result.identidad = "nao reconhecido"
+  }
+  result.fullTextInfo = ocrData;
+
+  if (!result.identidad) {
+    result.needsRevision = true;
+  }
+
+  return result;
+}
 
 exports.readImageWithAI = async (imagePath) => {
   try {
@@ -122,6 +149,224 @@ exports.readImageWithAI = async (imagePath) => {
   } catch (error) {
     console.error('Erro ao chamar a API da OpenAI:', error);
     throw new Error('Erro ao processar a imagem com a OpenAI');
+  }
+};
+
+exports.resizeImage = async (imagePath) => {
+  try {
+    const outputDir = path.join(path.dirname(imagePath), 'resized');
+
+    // Gera um nome de arquivo temporário exclusivo usando uuidv4
+    const uniqueFilename = `${uuidv4()}_${path.basename(imagePath)}`;
+
+    // Combina o diretório e o nome exclusivo
+    const outputPath = path.join(outputDir, uniqueFilename);
+
+    // Verificar se o diretório de saída existe, e criar se não existir
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Redimensionar a imagem
+    await sharp(imagePath)
+      .resize({
+        width: 2126,
+        fit: sharp.fit.inside,
+      })
+      .toFile(outputPath);
+
+    return outputPath;
+
+  } catch (error) {
+    console.error('Erro ao redimensionar a imagem:', error);
+  }
+};
+
+exports.readWithTesseract = async (imagePath, regex = null) => {
+  try {
+    const { data: { text } } = await Tesseract.recognize(imagePath, 'spa');
+    if (regex) {
+      const match = text.match(regex);
+      return match ? match[0] : text;
+    }
+    return text;
+  } catch (error) {
+    console.error('Erro ao processar a imagem com Tesseract:', error);
+    throw new Error('Erro ao processar a imagem com Tesseract');
+  }
+};
+
+
+exports.readImageWithGoogleVision = async (imagePath) => {
+  try {
+    // Reads the image file into a buffer
+    const [result] = await clientGoogleVision.textDetection(imagePath);
+    const detections = result.textAnnotations;
+
+    if (!detections.length) {
+      throw new Error('No text detected in the image.');
+    }
+
+    // You can get the full OCR text like this:
+    const fullText = detections[0].description;
+
+    // Process the text annotations and extract details for each voter
+    const voters = [];
+    return parseOCRResult(fullText);
+  } catch (error) {
+    console.error('Error during text detection with Google Vision:', error);
+    throw error;
+  }
+};
+
+exports.readNumberWithGoogleVision = async (imagePath) => {
+  try {
+    // Reads the image file into a buffer
+    const [result] = await clientGoogleVision.textDetection(imagePath);
+    const detections = result.textAnnotations;
+
+    if (!detections.length) {
+      throw new Error('No text detected in the image.');
+    }
+
+    // You can get the full OCR text like this:
+    const fullText = detections[0].description;
+
+    return fullText;
+
+  } catch (error) {
+    console.error('Error during text detection with Google Vision:', error);
+    throw error;
+  }
+};
+
+exports.cutResizedBorders = async (imagePath) => {
+  try {
+    // Gera um nome de arquivo temporário exclusivo usando uuidv4
+    const uniqueFilename = `${uuidv4()}_${path.basename(imagePath)}`;
+
+    // Combina o diretório e o nome exclusivo
+    const outputDir = path.join(path.dirname(imagePath), 'finalResult');
+    const outputPath = path.join(outputDir, uniqueFilename);
+
+    // Verificar se o diretório de saída existe, e criar se não existir
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const image = sharp(imagePath);
+    // Redimensionar a imagem
+    await image
+      .extract({ left: 32, top: 137, width: 2062, height: 1326 })
+      .toFormat('jpeg')  // Explicitly set the output format to JPEG
+      .toFile(outputPath);
+
+    return outputPath;
+
+  } catch (error) {
+    console.error('Erro ao redimensionar a imagem:', error);
+  }
+};
+
+exports.cutImageBorders = async (imagePath) => {
+  try {
+    // Gera um nome de arquivo temporário exclusivo usando uuidv4
+    const uniqueFilename = `${uuidv4()}_${path.basename(imagePath)}`;
+
+    // Combina o diretório e o nome exclusivo
+    const outputPath = path.join(path.dirname(imagePath), 'images-cutted', uniqueFilename);
+
+    if (!fs.existsSync(path.dirname(outputPath))) {
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    }
+
+    // Read the image
+    const image = sharp(imagePath);
+    const { width, height } = await image.metadata();
+
+    // Rotate the image if necessary
+    //const rotatedImage = rotationAngle !== 0 ? image.rotate(rotationAngle) : image;
+
+    // Trace a line from the middle of the top to the image
+    const { data } = await image.raw().toBuffer({ resolveWithObject: true });
+
+    let x1, y1, x2, y2;
+    // const whiteColor = { r: 255, g: 255, b: 255 };
+    // const yellowColor = { r: 233, g: 193, b: 130 };
+
+
+    function isTransitionFromWhiteToYellow(data, x, y, width, height) {
+      const idx = (y * width + x) * 3;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+
+      return r > 200 && b < 200;
+    }
+
+    //checa onde esta o primeiro pixel amarelo da esquerda pra direita, comecando do meio da imagem
+    for (let x = 0; x < width; x++) {
+      let y = Math.floor(height / 2);
+      if (isTransitionFromWhiteToYellow(data, x, y, width, height)) {
+        x1 = x;
+        console.log(`Found left border at ${x1}`);
+        break;
+      }
+    }
+    //checa onde esta o primeiro pixel amarelo da direita pra esquerda, comecando do meio da imagem
+    for (let x = width; x >= 0; x--) {
+      if (isTransitionFromWhiteToYellow(data, x, Math.floor(height / 2), width, height)) {
+        x2 = x;
+        console.log(`Found right border at ${x2}`);
+        break;
+      }
+    }
+
+    //checa onde esta o primeiro pixel amarelo de cima pra baixo, comecando do meio da imagem
+    for (let y = 0; y < height; y++) {
+      if (isTransitionFromWhiteToYellow(data, Math.floor(width / 2), y, width, height)) {
+        y1 = y;
+        console.log(`Found top border at ${y1}`);
+        break;
+      }
+    }
+
+    //checa onde esta o primeiro pixel amarelo de cima pra baixo, comecando do meio da imagem
+    for (let y = height; y >= 0; y--) {
+      if (isTransitionFromWhiteToYellow(data, Math.floor(width / 2), y, width, height)) {
+        y2 = y;
+        console.log(`Found bottom border at ${y2}`);
+        break;
+      }
+    }
+
+    if (x1 === undefined || y1 === undefined || x2 === undefined || y2 === undefined) {
+      throw new Error('Pontos que saem do branco não encontrados na imagem.');
+    }
+
+    // Calcular as dimensões do corte
+    const left = x1;
+    const top = y1;
+    const cropWidth = Math.abs(x2 - x1);
+    const cropHeight = Math.abs(y2 - y1);
+
+    // Apply rotation (if any) and crop
+    if (cropWidth > 0 && cropHeight > 0) {
+      await image
+        .extract({ left, top, width: cropWidth, height: cropHeight })
+        .toFormat('jpeg')  // Explicitly set the output format to JPEG
+        .toFile(outputPath);
+    } else {
+      // If cropWidth or cropHeight is 0, use the full image dimensions
+      await image
+        .toFormat('jpeg')
+        .toFile(outputPath);
+    }
+
+    return outputPath;
+  } catch (error) {
+    console.error('Error in cutImageBorders:', error);
+    throw error;
   }
 };
 
@@ -163,51 +408,55 @@ exports.readImage = async (imagePath, mimetype) => {
 
 exports.checkVoted = async (imagePath) => {
   try {
-    const image = await Jimp.read(imagePath);
-    const targetColor = { r: 84, g: 83, b: 96 };
-
+    if (!fs.existsSync(imagePath)) {
+      console.warn(`Arquivo não encontrado: ${imagePath}`);
+      return { votou: false };
+    }
+    const { data, info } = await sharp(imagePath).raw().toBuffer({ resolveWithObject: true });
     let matchingPixels = 0;
-    const totalPixels = image.bitmap.width * image.bitmap.height;
+    const totalPixels = info.width * info.height;
+    let tolerance = 10;
 
-    // Itera sobre cada pixel da imagem
-    image.scan(0, 0, image.bitmap.width, image.bitmap.height, (x, y, idx) => {
-      const red = image.bitmap.data[idx];
-      const green = image.bitmap.data[idx + 1];
-      const blue = image.bitmap.data[idx + 2];
-
-      // Verifica se o pixel é da cor alvo (com tolerância de 10 para cada canal)
-      const tolerance = 10;
+    for (let i = 0; i < data.length; i += 3) {
       if (
-        Math.abs(red - targetColor.r) <= tolerance &&
-        Math.abs(green - targetColor.g) <= tolerance &&
-        Math.abs(blue - targetColor.b) <= tolerance
+        data[i] < 200 &&
+        data[i + 1] < 200 &&
+        data[i + 2] < 200
       ) {
         matchingPixels++;
       }
-    });
+    }
 
-    // Calcula o percentual de pixels que correspondem à cor alvo
-    const percentage = (matchingPixels / totalPixels) * 100;
-
-    const votou = percentage > 1;
-
-    return {
-      votou
-    };
+    let per = (matchingPixels / totalPixels) * 100;
+    return { votou: per > 5 };
   } catch (error) {
     console.error('Erro ao ler a imagem:', error);
-    throw new Error('Erro ao processar a imagem para contagem de pixels');
+    return { votou: false };
   }
 };
+
+exports.deleteTempFile = async (imagePath) => {
+  try {
+    fs.unlink(imagePath, (err) => {
+      if (err) {
+        console.error(`Erro ao excluir o arquivo temporário: ${imagePath}`, err);
+      }
+    });
+  } catch (error) {
+    console.error('Erro ao deletar a imagem:', error);
+    return { votou: false };
+  }
+};
+
 
 exports.readImageWithAzureVision = async (imagePath) => {
   try {
     //checkImageDimensions(imagePath);
     // Lê a imagem como um buffer para enviar para a API
-    const finalPath = imagePath.split('.')[0] + 'Resized' +'.'+ imagePath.split('.')[1];
+    const finalPath = imagePath.split('.')[0] + 'Resized' + '.' + imagePath.split('.')[1];
 
     _ = await resizeImageIfNeeded(imagePath, finalPath);
-    
+
     const imageBuffer = fs.readFileSync(fs.existsSync(finalPath) ? finalPath : imagePath);
 
     // Envia a imagem para o Azure Vision API para extrair texto
@@ -228,7 +477,7 @@ exports.readImageWithAzureVision = async (imagePath) => {
 
     // Extrai os números do texto lido pela API
     const regex = /^\d{4}-\d{4}-\d{5}$/
-    let filtrado = readResult.analyzeResult.readResults[0].lines.filter(l =>{
+    let filtrado = readResult.analyzeResult.readResults[0].lines.filter(l => {
       return regex.test(l.text);
     })
 
